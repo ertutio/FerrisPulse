@@ -5,7 +5,7 @@
 //   OpenMouse 与 All-in-One-Mouse-Driver (Mouse Hub) 全量外设协议引擎
 //   涵盖 20+ 个品牌、数百款主流电竞/客制化/原相方案鼠标及键盘：
 //   1. CompX / PixArt 64字节 Feature 引擎 (Lamzu, Pulsar, WLmouse, Attack Shark, Ajazz, Darmoshark, Glorious, Ninjutso, RAWM, Incott, Delux, Vancer, Fantech, Finalmouse)
-//   2. Beken / ATK / Endgame Gear 16字节 EEPROM 引擎 (ATK A9/F1/X1, VXE R1 全系, Endgame Gear OP1we/XM2we)
+//   2. Beken / Endgame Gear Feature 引擎；ATK A9 Ultimate 独立 Output/Input 只读电量通道
 //   3. Vaxee 64字节专用控制引擎 (NP-01S, NP-01S v2, XE, AX, OUTSET AX, E1)
 //   4. Asus ROG / TUF, SteelSeries, Corsair, Dareu, Keychron, Wooting 厂商协议引擎
 // 依赖关系: NativeMethods.cs, MouseBatteryInfo.cs, RazerDeviceHelper.cs
@@ -167,6 +167,8 @@ namespace RazerBatteryTray
             AddProduct(VID_ENDGAME_GEAR, 0x0003, "Endgame Gear", "OP1 8K 有线", DeviceCategory.Mouse, 8000);
 
             // --- ATK / VXE ---
+            AddProduct(VID_ATK, 0x1118, "ATK", "ATK A9 Ultimate", DeviceCategory.Mouse, 8000);
+            AddProduct(VID_ATK, 0x11B6, "ATK", "ATK A9 Ultimate", DeviceCategory.Mouse, 8000);
             AddProduct(VID_ATK, 0x1085, "VXE", "VXE Dragonfly R1 SE / SE+", DeviceCategory.Mouse, 2000);
             AddProduct(VID_VGN_COMPX, 0xF58A, "VXE", "VXE Dragonfly R1 Pro Max 接收器", DeviceCategory.Mouse, 4000);
             AddProduct(VID_VGN_COMPX, 0xF58C, "VXE", "VXE Dragonfly R1 Pro Max 有线", DeviceCategory.Mouse, 4000);
@@ -505,6 +507,156 @@ namespace RazerBatteryTray
 
         #endregion
 
+        #region ATK A9 Ultimate：仅电量查询，不写 EEPROM/配对/固件
+
+        // Protocol facts: OpenMouse-Project/mouse-protocol, src/drivers/atk/hid.ts
+        // (readBattery/exchange/isSupported), catalog 373B:11B6 = A9 Ultimate, CID/MID 1,3.
+        // Independently implemented here; no upstream implementation is copied.
+        // Official ATK HUB v2 device catalog: 373B:1118, FF04:0002, A9 Ultimate.
+        // https://v2-hub.atk.pro/assets/index-BE5kncBT.js
+        // Its Compx controller confirms command 0x04 on output/input report 0x08.
+        // FF02:0002 is also evidenced by the OpenMouse transport implementation.
+        public static bool IsAtkA9Ultimate(int vid, int pid)
+        {
+            return vid == VID_ATK && (pid == 0x1118 || pid == 0x11B6);
+        }
+
+        public static bool IsAtkBatteryCollection(int usagePage, int usage, int inputLength, int outputLength)
+        {
+            return (usagePage == 0xFF02 || usagePage == 0xFF04) && usage == 0x0002 && inputLength == 17 && outputLength == 17;
+        }
+
+        public static byte[] BuildAtkBatteryRequest()
+        {
+            byte[] report = new byte[17];
+            report[0] = 0x08;
+            report[1] = 0x04;
+            report[16] = 0x49; // Report ID + command + checksum = 0x55.
+            return report;
+        }
+
+        public static bool TryParseAtkBatteryReport(byte[] report, out int percent, out bool charging, out int millivolts)
+        {
+            percent = -1;
+            charging = false;
+            millivolts = 0;
+            if (report == null || report.Length != 17 || report[0] != 0x08 || report[1] != 0x04) return false;
+            int sum = 0;
+            for (int i = 0; i < report.Length; i++) sum += report[i];
+            // Payload has a five-byte header, at most ten data bytes and a checksum.
+            int length = report[5];
+            if ((sum & 0xFF) != 0x55 || length < 2 || length > 10 || report[6] > 100) return false;
+            percent = report[6]; // Zero is a valid battery level.
+            charging = report[7] != 0;
+            if (length >= 4) millivolts = (report[8] << 8) | report[9];
+            return true;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct AtkOverlapped
+        {
+            public IntPtr Internal;
+            public IntPtr InternalHigh;
+            public uint Offset;
+            public uint OffsetHigh;
+            public IntPtr Event;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr CreateEvent(IntPtr attributes, bool manualReset, bool initialState, string name);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool ReadFile(IntPtr handle, IntPtr buffer, uint length, out uint transferred, IntPtr overlapped);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool WriteFile(IntPtr handle, IntPtr buffer, uint length, out uint transferred, IntPtr overlapped);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetOverlappedResult(IntPtr handle, IntPtr overlapped, out uint transferred, bool wait);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CancelIo(IntPtr handle);
+
+        // Mirrors the existing HyperX overlapped I/O lifecycle. Unmanaged memory remains
+        // valid until a pending request completes, including cancellation on timeout.
+        private static bool TransferAtkReport(IntPtr handle, byte[] report, bool write, uint timeout)
+        {
+            IntPtr evt = CreateEvent(IntPtr.Zero, true, false, null);
+            if (evt == IntPtr.Zero) return false;
+            IntPtr buffer = IntPtr.Zero;
+            IntPtr overlapped = IntPtr.Zero;
+            try
+            {
+                buffer = Marshal.AllocHGlobal(report.Length);
+                Marshal.Copy(report, 0, buffer, report.Length);
+                overlapped = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(AtkOverlapped)));
+                AtkOverlapped state = new AtkOverlapped();
+                state.Event = evt;
+                Marshal.StructureToPtr(state, overlapped, false);
+                uint transferred;
+                bool done = write
+                    ? WriteFile(handle, buffer, (uint)report.Length, out transferred, overlapped)
+                    : ReadFile(handle, buffer, (uint)report.Length, out transferred, overlapped);
+                if (!done)
+                {
+                    if (Marshal.GetLastWin32Error() != 997) return false;
+                    if (WaitForSingleObject(evt, timeout) != 0)
+                    {
+                        CancelIo(handle);
+                        GetOverlappedResult(handle, overlapped, out transferred, true);
+                        return false;
+                    }
+                    if (!GetOverlappedResult(handle, overlapped, out transferred, false)) return false;
+                }
+                if (transferred != report.Length) return false;
+                if (!write) Marshal.Copy(buffer, report, 0, report.Length);
+                return true;
+            }
+            finally
+            {
+                if (overlapped != IntPtr.Zero) Marshal.FreeHGlobal(overlapped);
+                if (buffer != IntPtr.Zero) Marshal.FreeHGlobal(buffer);
+                RazerDeviceHelper.CloseHandle(evt);
+            }
+        }
+
+        private static bool QueryAtkA9Battery(string devicePath, IntPtr discoveryHandle, out int percent, out bool charging, out int millivolts)
+        {
+            percent = -1;
+            charging = false;
+            millivolts = 0;
+            IntPtr preparsed;
+            if (!RazerDeviceHelper.HidD_GetPreparsedData(discoveryHandle, out preparsed)) return false;
+            try
+            {
+                RazerDeviceHelper.HIDP_CAPS caps;
+                if (RazerDeviceHelper.HidP_GetCaps(preparsed, out caps) != 0x00110000 ||
+                    !IsAtkBatteryCollection(caps.UsagePage, caps.Usage, caps.InputReportByteLength, caps.OutputReportByteLength)) return false;
+            }
+            finally { RazerDeviceHelper.HidD_FreePreparsedData(preparsed); }
+
+            IntPtr handle = RazerDeviceHelper.CreateFile(devicePath, GENERIC_READ | GENERIC_WRITE,
+                RazerDeviceHelper.FILE_SHARE_READ | RazerDeviceHelper.FILE_SHARE_WRITE,
+                IntPtr.Zero, RazerDeviceHelper.OPEN_EXISTING, 0x40000000, IntPtr.Zero);
+            if (handle == IntPtr.Zero || handle.ToInt64() == -1) return false;
+            try
+            {
+                if (!TransferAtkReport(handle, BuildAtkBatteryRequest(), true, 100)) return false;
+                Stopwatch timer = Stopwatch.StartNew();
+                // Ignore unrelated input reports, without an unbounded poll loop.
+                for (int attempt = 0; attempt < 8 && timer.ElapsedMilliseconds < 500; attempt++)
+                {
+                    byte[] reply = new byte[17];
+                    uint remaining = (uint)Math.Max(1L, 500L - timer.ElapsedMilliseconds);
+                    if (!TransferAtkReport(handle, reply, false, remaining)) return false;
+                    if (TryParseAtkBatteryReport(reply, out percent, out charging, out millivolts)) return true;
+                }
+            }
+            catch { }
+            finally { RazerDeviceHelper.CloseHandle(handle); }
+            return false;
+        }
+
+        #endregion
+
         #region 协议引擎三：Vaxee 64字节专用控制引擎
 
         public static bool QueryVaxeeBattery(IntPtr handle, out int percent, out bool isCharging)
@@ -736,19 +888,18 @@ namespace RazerBatteryTray
                                                 bool isChg = false;
                                                 int mv = 0;
 
-                                                // 1. 尝试 CompX / PixArt 协议
-                                                bool ok = QueryCompxBattery(handle, out batt, out isChg);
-
-                                                // 2. 尝试 Beken / ATK / Endgame 协议
-                                                if (!ok)
+                                                bool isAtkA9 = IsAtkA9Ultimate(attr.VendorID, attr.ProductID);
+                                                bool ok;
+                                                if (isAtkA9)
                                                 {
-                                                    ok = QueryBekenWeBattery(handle, out batt, out isChg, out mv);
+                                                    // No generic Feature probes on this Output/Input device.
+                                                    ok = QueryAtkA9Battery(devicePath, handle, out batt, out isChg, out mv);
                                                 }
-
-                                                // 3. 尝试 Vaxee 协议
-                                                if (!ok)
+                                                else
                                                 {
-                                                    ok = QueryVaxeeBattery(handle, out batt, out isChg);
+                                                    ok = QueryCompxBattery(handle, out batt, out isChg);
+                                                    if (!ok) ok = QueryBekenWeBattery(handle, out batt, out isChg, out mv);
+                                                    if (!ok) ok = QueryVaxeeBattery(handle, out batt, out isChg);
                                                 }
 
                                                 if (ok || batt > 0)
@@ -761,7 +912,10 @@ namespace RazerBatteryTray
                                                     info.DeviceName = product.ModelName;
                                                     info.Brand = product.Brand;
                                                     info.Category = product.Category;
-                                                    info.Transport = "2.4G 无线 / 极速回报";
+                                                    info.Transport = isAtkA9
+                                                        ? ((prodStr.IndexOf("dongle", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                                            prodStr.IndexOf("receiver", StringComparison.OrdinalIgnoreCase) >= 0) ? "2.4G 无线" : "USB")
+                                                        : "2.4G 无线 / 极速回报";
                                                     info.IsDonglePresent = true;
                                                     info.IsConnected = true;
                                                     info.IsSleeping = false;

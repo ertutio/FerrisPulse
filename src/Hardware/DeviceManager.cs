@@ -676,6 +676,19 @@ namespace RazerBatteryTray
 
 
 
+            // 2.6.1 Query WAVE75 through its PMO HUB receiver after downstream identity confirmation.
+            try
+            {
+                var wave75 = Wave75DeviceHelper.QueryWave75Receiver();
+                if (wave75 != null && wave75.BatteryPercent >= 0)
+                {
+                    wave75.IsCustom = false;
+                    list.Add(wave75);
+                    UpdateCustomDeviceBattery(wave75.DeviceId, wave75.BatteryPercent, DateTime.Now);
+                }
+            }
+            catch { }
+
             // 2.7 Query Logitech (Lightspeed, Unifying, Nano, Wired)
             try
             {
