@@ -2744,8 +2744,8 @@ namespace RazerBatteryTray
             {
                 bool isGenMouse = (info.Category == DeviceCategory.Mouse);
                 bool isAtkA9 = IsAtkA9SettingsTarget(info);
-                AdjustPerformanceCardHeight((int)((isAtkA9 ? 200 : (isGenMouse ? 160 : 120)) * dpiScale));
-                if (lblPerfTitle != null) lblPerfTitle.Text = isAtkA9 ? "ATK A9 Ultimate 硬件设置" : (isGenMouse ? "鼠标工作状态与测速" : "外设连接与状态");
+                AdjustPerformanceCardHeight((int)((isGenMouse ? 160 : 120) * dpiScale));
+                if (lblPerfTitle != null) lblPerfTitle.Text = isGenMouse ? "鼠标工作状态与测速" : "外设连接与状态";
 
                 // Hide Razer interactive controls
                 if (lblDpiTitle != null) lblDpiTitle.Visible = false;
@@ -2789,15 +2789,17 @@ namespace RazerBatteryTray
                     tileRapooDpi.Invalidate();
                 }
 
+                int buttonGap = (int)(8 * dpiScale);
+                int buttonWidth = (secW - buttonGap) / 2;
                 if (isGenMouse && btnMouseRateTest != null)
                 {
                     btnMouseRateTest.Visible = true;
-                    btnMouseRateTest.SetBounds((int)(16 * dpiScale), (int)(110 * dpiScale), secW, (int)(34 * dpiScale));
+                    btnMouseRateTest.SetBounds((int)(16 * dpiScale), (int)(110 * dpiScale), isAtkA9 ? buttonWidth : secW, (int)(34 * dpiScale));
                 }
                 if (isAtkA9 && btnAtkA9Settings != null)
                 {
                     btnAtkA9Settings.Visible = true;
-                    btnAtkA9Settings.SetBounds((int)(16 * dpiScale), (int)(151 * dpiScale), secW, (int)(34 * dpiScale));
+                    btnAtkA9Settings.SetBounds((int)(16 * dpiScale) + buttonWidth + buttonGap, (int)(110 * dpiScale), secW - buttonWidth - buttonGap, (int)(34 * dpiScale));
                 }
 
                 if (dpiMenu != null) dpiMenu.Visible = false;

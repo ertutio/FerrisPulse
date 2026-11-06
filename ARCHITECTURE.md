@@ -38,7 +38,7 @@ D:\FerrisPulse · 灵脉\
     │   ├── VgnDeviceHelper.cs   [VGN / 蜻蜓 / ATK 协议解析]
     │   ├── LogitechDeviceHelper.cs [罗技 HID++ 协议解析]
     │   ├── NuphyDeviceHelper.cs [NuPhy 键盘电量协议与侧灯控制]
-    │   ├── Wave75DeviceHelper.cs [WAVE75 接收器身份确认、电量与设置会话]
+    │   ├── Wave75DeviceHelper.cs [WAVE75 接收器身份确认与设置会话；电量协议实现未用于默认轮询]
     │   ├── Wave75Settings.cs [WAVE75 灯效、键位与宏的纯协议编解码]
     │   ├── UniversalGamingDeviceHelper.cs [多品牌外设电量；ATK A9 Ultimate 独立 HID Output/Input 查询]
     │   ├── AtkA9SettingsHelper.cs [A9 Ultimate 专用 EEPROM 读写、回读核对与宏]
@@ -111,10 +111,10 @@ D:\FerrisPulse · 灵脉\
 | **托盘图标丢失 / Explorer 重启自愈** | `src/UI/Forms/MainForm.Events.cs` | 监听 `WM_TASKBARCREATED` 并自动恢复 |
 | **雷蛇 DPI 档位 / 8K 回报率 / XY 轴独立灵敏度** | `src/Hardware/RazerDeviceHelper.cs` | 雷蛇私有 HID 报文、独立 X/Y 轴与板载 Flash 写入 |
 | **瓦尔基里全系键盘/鼠标支持** | `src/Hardware/ValkyrieDeviceHelper.cs` | 瓦尔基里全系 2.4G 接收器/HID 协议解析、双模电量、8K 回报率与独立 X/Y 轴 DPI 调节 |
-| **WAVE75 键盘电量** | `src/Hardware/Wave75DeviceHelper.cs` / `src/Hardware/DeviceManager.cs` | 仅匹配 `36B0:3002` 的 `FF60:0061` 接收器集合，确认下游 `36B0:3008/3009` 且键盘类型为 103 后查询电量；有界 HID 收发与退出确认 |
+| **WAVE75 键盘电量** | `src/Hardware/BluetoothDeviceHelper.cs` / `src/Hardware/DeviceManager.cs` | 蓝牙连接后经现有设备添加流程读取 Windows 蓝牙电量；实机 2.4G 接收器不返回有效下游身份，默认轮询不再访问该接收器 |
 | **ATK A9 Ultimate 鼠标电量** | `src/Hardware/UniversalGamingDeviceHelper.cs` | 直连 `373B:1118/11B6` 使用 17 字节 `FF04:0002` 或 `FF02:0002`；实测 2.4G 接收器 `373B:11D9` 使用 `FF02:0002`，须先以 CID/MID `1/3` 确认配对鼠标，才读取电量并显示为 A9；共享接收器不能仅凭 VID/PID 归属型号 |
 | **WAVE75 灯效、键位和宏** | `src/Hardware/Wave75DeviceHelper.cs` / `src/Hardware/Wave75Settings.cs` / `src/UI/Forms/Wave75SettingsDialog.cs` / `src/UI/Forms/Wave75KeyMacroDialog.cs` | 仅在接收器确认下游 WAVE75 后开启设置会话；灯效和键位保留非目标字节，宏按官方序列化器重建整表；分片写入后回读核对；物理矩阵索引需实机确认 |
-| **ATK A9 Ultimate DPI、侧键和宏** | `src/Hardware/AtkA9SettingsHelper.cs` / `src/Models/AtkA9Settings.cs` / `src/UI/Forms/AtkA9SettingsDialog.cs` | 仅对官方 3.2.31 表中的 `373B:11B6`、`FF04:0002` 且 CID/MID 为 1/3 的设备开放设置；读原 EEPROM 后保留非目标数据，写入后回读；不复用雷蛇 DPI 路由 |
+| **ATK A9 Ultimate DPI、侧键和宏** | `src/Hardware/AtkA9SettingsHelper.cs` / `src/Models/AtkA9Settings.cs` / `src/UI/Forms/AtkA9SettingsDialog.cs` | 仅对官方 3.2.31 表中的 `373B:11B6`、`FF04:0002` 且 CID/MID 为 1/3 的设备开放设置；主页只占用现有按钮行的一个入口，DPI、侧键和宏留在独立窗口；读原 EEPROM 后保留非目标数据，写入后回读 |
 | **DPI 档位管理与 XY 轴比例调节** | `src/UI/Forms/DpiManagementDialog.cs` / `src/UI/Controls/DpiStageRowControl.cs` | DPI 档位增删、XY 轴独立调节 (4:3/16:10 比例联动) 与板载固化 |
 | **屏幕悬浮 OSD 指示器** | `src/UI/Forms/DpiOsdForm.cs` | 游戏前台免切焦点悬浮 HUD、DPI/XY独立双轴显示与回报率变动提示 |
 | **多设备优先级拖拽与首选设备** | `src/Hardware/DeviceManager.cs` / `DevicePriorityForm.cs` | 外设优先级权重与展示顺序 |

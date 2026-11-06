@@ -714,7 +714,7 @@ namespace RazerBatteryTray
             cardPerformance.Controls.Add(btnMouseRateTest);
 
             btnAtkA9Settings = new ModernButton();
-            btnAtkA9Settings.Text = "🎯 ATK A9 Ultimate 高级设置";
+            btnAtkA9Settings.Text = "🎯 A9 高级设置";
             btnAtkA9Settings.Font = new Font("Microsoft YaHei UI", 8.5F, FontStyle.Bold);
             btnAtkA9Settings.NormalColor = Color.FromArgb(36, 44, 62);
             btnAtkA9Settings.HoverColor = Color.FromArgb(50, 62, 88);
