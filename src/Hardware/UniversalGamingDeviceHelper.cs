@@ -521,6 +521,34 @@ namespace RazerBatteryTray
             return vid == VID_ATK && (pid == 0x1118 || pid == 0x11B6);
         }
 
+        // ATK HUB 3.2.31: 11D9 is a shared COMpx receiver, not an A9 model ID.
+        // A9 identity must be read using GetMouseCIDMID before issuing its battery query.
+        public static bool IsAtkSharedA9Receiver(int vid, int pid)
+        {
+            return vid == VID_ATK && pid == 0x11D9;
+        }
+
+        public static bool IsAtkReceiverBatteryCollection(int usagePage, int usage, int inputLength, int outputLength)
+        {
+            return usagePage == 0xFF02 && usage == 2 && inputLength == 17 && outputLength == 17;
+        }
+
+        public static byte[] BuildAtkMouseIdentityRequest()
+        {
+            byte[] report = new byte[17];
+            report[0] = 8; report[1] = 0x10; report[16] = 0x3D;
+            return report;
+        }
+
+        public static bool TryParseAtkA9IdentityReport(byte[] report)
+        {
+            if (report == null || report.Length != 17 || report[0] != 8 || report[1] != 0x10 ||
+                report[2] != 0 || report[3] != 0 || report[4] != 0 || report[5] < 2 || report[5] > 10) return false;
+            int sum = 0;
+            for (int i = 0; i < report.Length; i++) sum += report[i];
+            return (sum & 255) == 0x55 && report[6] == 1 && report[7] == 3;
+        }
+
         public static bool IsAtkBatteryCollection(int usagePage, int usage, int inputLength, int outputLength)
         {
             return (usagePage == 0xFF02 || usagePage == 0xFF04) && usage == 0x0002 && inputLength == 17 && outputLength == 17;
@@ -540,7 +568,8 @@ namespace RazerBatteryTray
             percent = -1;
             charging = false;
             millivolts = 0;
-            if (report == null || report.Length != 17 || report[0] != 0x08 || report[1] != 0x04) return false;
+            if (report == null || report.Length != 17 || report[0] != 0x08 || report[1] != 0x04 ||
+                report[2] != 0 || report[3] != 0 || report[4] != 0) return false;
             int sum = 0;
             for (int i = 0; i < report.Length; i++) sum += report[i];
             // Payload has a five-byte header, at most ten data bytes and a checksum.
@@ -698,7 +727,7 @@ namespace RazerBatteryTray
             }
         }
 
-        private static bool QueryAtkA9Battery(string devicePath, IntPtr discoveryHandle, out int percent, out bool charging, out int millivolts)
+        private static bool QueryAtkA9Battery(string devicePath, IntPtr discoveryHandle, bool requireReceiverIdentity, out int percent, out bool charging, out int millivolts)
         {
             percent = -1;
             charging = false;
@@ -709,7 +738,9 @@ namespace RazerBatteryTray
             {
                 RazerDeviceHelper.HIDP_CAPS caps;
                 if (RazerDeviceHelper.HidP_GetCaps(preparsed, out caps) != 0x00110000 ||
-                    !IsAtkBatteryCollection(caps.UsagePage, caps.Usage, caps.InputReportByteLength, caps.OutputReportByteLength)) return false;
+                    !(requireReceiverIdentity
+                        ? IsAtkReceiverBatteryCollection(caps.UsagePage, caps.Usage, caps.InputReportByteLength, caps.OutputReportByteLength)
+                        : IsAtkBatteryCollection(caps.UsagePage, caps.Usage, caps.InputReportByteLength, caps.OutputReportByteLength))) return false;
             }
             finally { RazerDeviceHelper.HidD_FreePreparsedData(preparsed); }
 
@@ -719,6 +750,9 @@ namespace RazerBatteryTray
             if (handle == IntPtr.Zero || handle.ToInt64() == -1) return false;
             try
             {
+                // No Feature-report fallback: a shared receiver must prove the paired model.
+                if (requireReceiverIdentity && !TryParseAtkA9IdentityReport(
+                    ExchangeAtkSettingsReport(handle, BuildAtkMouseIdentityRequest()))) return false;
                 if (!TransferAtkReport(handle, BuildAtkBatteryRequest(), true, 100)) return false;
                 Stopwatch timer = Stopwatch.StartNew();
                 // Ignore unrelated input reports, without an unbounded poll loop.
@@ -969,11 +1003,12 @@ namespace RazerBatteryTray
                                                 int mv = 0;
 
                                                 bool isAtkA9 = IsAtkA9Ultimate(attr.VendorID, attr.ProductID);
+                                                bool isAtkReceiver = IsAtkSharedA9Receiver(attr.VendorID, attr.ProductID);
                                                 bool ok;
-                                                if (isAtkA9)
+                                                if (isAtkA9 || isAtkReceiver)
                                                 {
                                                     // No generic Feature probes on this Output/Input device.
-                                                    ok = QueryAtkA9Battery(devicePath, handle, out batt, out isChg, out mv);
+                                                    ok = QueryAtkA9Battery(devicePath, handle, isAtkReceiver, out batt, out isChg, out mv);
                                                 }
                                                 else
                                                 {
@@ -989,10 +1024,12 @@ namespace RazerBatteryTray
                                                     MouseBatteryInfo info = new MouseBatteryInfo();
                                                     info.DeviceId = string.Format("Gaming:{0:X4}:{1:X4}", attr.VendorID, attr.ProductID);
                                                     info.HardwareFingerprint = string.Format("HID:{0:X4}:{1:X4}", attr.VendorID, attr.ProductID);
+                                                    // Keep receiver VID/PID in DeviceId so settings writes remain disabled.
+                                                    if (isAtkReceiver) product = LookupProduct(VID_ATK, 0x11B6, "ATK A9 Ultimate");
                                                     info.DeviceName = product.ModelName;
                                                     info.Brand = product.Brand;
                                                     info.Category = product.Category;
-                                                    info.Transport = isAtkA9
+                                                    info.Transport = isAtkReceiver ? "2.4G 无线" : isAtkA9
                                                         ? ((prodStr.IndexOf("dongle", StringComparison.OrdinalIgnoreCase) >= 0 ||
                                                             prodStr.IndexOf("receiver", StringComparison.OrdinalIgnoreCase) >= 0) ? "2.4G 无线" : "USB")
                                                         : "2.4G 无线 / 极速回报";
