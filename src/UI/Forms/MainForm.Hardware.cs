@@ -2015,6 +2015,22 @@ namespace RazerBatteryTray
             });
         }
 
+        private static bool IsWave75SettingsTarget(MouseBatteryInfo info)
+        {
+            if (info == null || info.Category != DeviceCategory.Keyboard ||
+                !string.Equals(info.Brand, "PMO", StringComparison.Ordinal) ||
+                !string.Equals(info.DeviceName, "WAVE75", StringComparison.Ordinal)) return false;
+            return string.Equals(info.DeviceId, "HID:36B0:3008", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(info.DeviceId, "HID:36B0:3009", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsAtkA9SettingsTarget(MouseBatteryInfo info)
+        {
+            return info != null && info.Category == DeviceCategory.Mouse &&
+                   string.Equals(info.Brand, "ATK", StringComparison.Ordinal) &&
+                   string.Equals(info.DeviceId, "Gaming:373B:11B6", StringComparison.OrdinalIgnoreCase);
+        }
+
         private void UpdatePerformanceSection(MouseBatteryInfo info, Color brandAccent)
         {
             if (info == null) return;
@@ -2030,11 +2046,18 @@ namespace RazerBatteryTray
             if (hudThreeLocks != null) hudThreeLocks.Visible = false;
             if (btnUniversalWinLock != null) btnUniversalWinLock.Visible = false;
             if (btnKeyTestSpeed != null) btnKeyTestSpeed.Visible = false;
-            if (btnKeyboardSettings != null) btnKeyboardSettings.Visible = false;
+            if (btnKeyboardSettings != null)
+            {
+                btnKeyboardSettings.Visible = false;
+                btnKeyboardSettings.Text = IsWave75SettingsTarget(info)
+                    ? "⌨️ WAVE75 灯效设置"
+                    : "⌨️ 打开 Windows 键盘属性设置";
+            }
             if (btnAudioSetDefault != null) btnAudioSetDefault.Visible = false;
             if (btnVolumeMixer != null) btnVolumeMixer.Visible = false;
             if (btnAudioSettings != null) btnAudioSettings.Visible = false;
             if (btnMouseRateTest != null) btnMouseRateTest.Visible = false;
+            if (btnAtkA9Settings != null) btnAtkA9Settings.Visible = false;
 
             bool isGamepad = (info.Category == DeviceCategory.Gamepad);
             bool isHeadset = (info.Category == DeviceCategory.Headset || info.Category == DeviceCategory.Earbuds);
@@ -2720,8 +2743,9 @@ namespace RazerBatteryTray
             else // Generic Mouse or Generic Peripheral
             {
                 bool isGenMouse = (info.Category == DeviceCategory.Mouse);
-                AdjustPerformanceCardHeight((int)((isGenMouse ? 160 : 120) * dpiScale));
-                if (lblPerfTitle != null) lblPerfTitle.Text = isGenMouse ? "鼠标工作状态与测速" : "外设连接与状态";
+                bool isAtkA9 = IsAtkA9SettingsTarget(info);
+                AdjustPerformanceCardHeight((int)((isAtkA9 ? 200 : (isGenMouse ? 160 : 120)) * dpiScale));
+                if (lblPerfTitle != null) lblPerfTitle.Text = isAtkA9 ? "ATK A9 Ultimate 硬件设置" : (isGenMouse ? "鼠标工作状态与测速" : "外设连接与状态");
 
                 // Hide Razer interactive controls
                 if (lblDpiTitle != null) lblDpiTitle.Visible = false;
@@ -2769,6 +2793,11 @@ namespace RazerBatteryTray
                 {
                     btnMouseRateTest.Visible = true;
                     btnMouseRateTest.SetBounds((int)(16 * dpiScale), (int)(110 * dpiScale), secW, (int)(34 * dpiScale));
+                }
+                if (isAtkA9 && btnAtkA9Settings != null)
+                {
+                    btnAtkA9Settings.Visible = true;
+                    btnAtkA9Settings.SetBounds((int)(16 * dpiScale), (int)(151 * dpiScale), secW, (int)(34 * dpiScale));
                 }
 
                 if (dpiMenu != null) dpiMenu.Visible = false;

@@ -5,7 +5,7 @@
 //   OpenMouse 与 All-in-One-Mouse-Driver (Mouse Hub) 全量外设协议引擎
 //   涵盖 20+ 个品牌、数百款主流电竞/客制化/原相方案鼠标及键盘：
 //   1. CompX / PixArt 64字节 Feature 引擎 (Lamzu, Pulsar, WLmouse, Attack Shark, Ajazz, Darmoshark, Glorious, Ninjutso, RAWM, Incott, Delux, Vancer, Fantech, Finalmouse)
-//   2. Beken / Endgame Gear Feature 引擎；ATK A9 Ultimate 独立 Output/Input 只读电量通道
+//   2. Beken / Endgame Gear Feature 引擎；ATK A9 Ultimate 独立 Output/Input 电量与精确型号设置传输通道
 //   3. Vaxee 64字节专用控制引擎 (NP-01S, NP-01S v2, XE, AX, OUTSET AX, E1)
 //   4. Asus ROG / TUF, SteelSeries, Corsair, Dareu, Keychron, Wooting 厂商协议引擎
 // 依赖关系: NativeMethods.cs, MouseBatteryInfo.cs, RazerDeviceHelper.cs
@@ -507,7 +507,7 @@ namespace RazerBatteryTray
 
         #endregion
 
-        #region ATK A9 Ultimate：仅电量查询，不写 EEPROM/配对/固件
+        #region ATK A9 Ultimate：电量查询及独立设置服务共用的 HID 传输；不执行配对或固件操作
 
         // Protocol facts: OpenMouse-Project/mouse-protocol, src/drivers/atk/hid.ts
         // (readBattery/exchange/isSupported), catalog 373B:11B6 = A9 Ultimate, CID/MID 1,3.
@@ -615,6 +615,86 @@ namespace RazerBatteryTray
                 if (overlapped != IntPtr.Zero) Marshal.FreeHGlobal(overlapped);
                 if (buffer != IntPtr.Zero) Marshal.FreeHGlobal(buffer);
                 RazerDeviceHelper.CloseHandle(evt);
+            }
+        }
+
+        // Settings reuse the proven Output/Input transport; other brands retain their paths.
+        internal static IntPtr OpenAtkSettingsHandle(string path, int vid, int pid)
+        {
+            if (vid != VID_ATK || pid != 0x11B6) throw new NotSupportedException("Only the V3-confirmed ATK A9 Ultimate 373B:11B6 settings layout is supported.");
+            IntPtr h = RazerDeviceHelper.CreateFile(path, GENERIC_READ | GENERIC_WRITE,
+                RazerDeviceHelper.FILE_SHARE_READ | RazerDeviceHelper.FILE_SHARE_WRITE,
+                IntPtr.Zero, RazerDeviceHelper.OPEN_EXISTING, 0x40000000, IntPtr.Zero);
+            if (h == IntPtr.Zero || h.ToInt64() == -1) throw new IOException("Cannot open ATK A9 Ultimate.");
+            try
+            {
+                RazerDeviceHelper.HIDD_ATTRIBUTES a = new RazerDeviceHelper.HIDD_ATTRIBUTES();
+                a.Size = Marshal.SizeOf(a);
+                if (!RazerDeviceHelper.HidD_GetAttributes(h, ref a) || a.VendorID != vid || a.ProductID != pid)
+                    throw new IOException("ATK device identity changed.");
+                IntPtr pp;
+                if (!RazerDeviceHelper.HidD_GetPreparsedData(h, out pp)) throw new IOException("Cannot inspect ATK collection.");
+                try
+                {
+                    RazerDeviceHelper.HIDP_CAPS c;
+                    if (RazerDeviceHelper.HidP_GetCaps(pp, out c) != 0x00110000 || c.UsagePage != 0xFF04 || c.Usage != 2 || c.InputReportByteLength != 17 || c.OutputReportByteLength != 17)
+                        throw new IOException("ATK settings require FF04:0002 with 17-byte reports.");
+                }
+                finally { RazerDeviceHelper.HidD_FreePreparsedData(pp); }
+                return h;
+            }
+            catch { RazerDeviceHelper.CloseHandle(h); throw; }
+        }
+
+        internal static List<string> FindAtkSettingsPaths(int vid, int pid)
+        {
+            if (vid != VID_ATK || pid != 0x11B6) throw new NotSupportedException("Settings require confirmed A9 Ultimate 373B:11B6.");
+            List<string> paths = new List<string>();
+            Guid guid;
+            RazerDeviceHelper.HidD_GetHidGuid(out guid);
+            IntPtr set = RazerDeviceHelper.SetupDiGetClassDevs(ref guid, null, IntPtr.Zero, 0x12);
+            if (set == IntPtr.Zero || set.ToInt64() == -1) return paths;
+            try
+            {
+                RazerDeviceHelper.SP_DEVICE_INTERFACE_DATA data = new RazerDeviceHelper.SP_DEVICE_INTERFACE_DATA();
+                data.cbSize = Marshal.SizeOf(data);
+                for (uint n = 0; RazerDeviceHelper.SetupDiEnumDeviceInterfaces(set, IntPtr.Zero, ref guid, n, ref data); n++)
+                {
+                    uint size;
+                    RazerDeviceHelper.SetupDiGetDeviceInterfaceDetail(set, ref data, IntPtr.Zero, 0, out size, IntPtr.Zero);
+                    if (size < 8) continue;
+                    IntPtr detail = Marshal.AllocHGlobal((int)size);
+                    try
+                    {
+                        Marshal.WriteInt32(detail, IntPtr.Size == 8 ? 8 : 5);
+                        if (!RazerDeviceHelper.SetupDiGetDeviceInterfaceDetail(set, ref data, detail, size, out size, IntPtr.Zero)) continue;
+                        string path = Marshal.PtrToStringAuto(new IntPtr(detail.ToInt64() + 4));
+                        if (path == null || path.IndexOf("vid_373b&pid_11b6", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                        IntPtr h = IntPtr.Zero;
+                        try { h = OpenAtkSettingsHandle(path, vid, pid); paths.Add(path); }
+                        catch (IOException) { }
+                        finally { if (h != IntPtr.Zero) RazerDeviceHelper.CloseHandle(h); }
+                    }
+                    finally { Marshal.FreeHGlobal(detail); }
+                }
+            }
+            finally { RazerDeviceHelper.SetupDiDestroyDeviceInfoList(set); }
+            return paths;
+        }
+
+        internal static byte[] ExchangeAtkSettingsReport(IntPtr handle, byte[] request)
+        {
+            lock (hidLock)
+            {
+                if (!TransferAtkReport(handle, request, true, 500)) throw new IOException("ATK output report timed out or failed.");
+                Stopwatch timer = Stopwatch.StartNew();
+                for (int n = 0; n < 12 && timer.ElapsedMilliseconds < 1000; n++)
+                {
+                    byte[] reply = new byte[17];
+                    if (!TransferAtkReport(handle, reply, false, (uint)Math.Max(1L, 1000L - timer.ElapsedMilliseconds))) break;
+                    if (reply[0] == 8 && reply[1] == request[1] && reply[3] == request[3] && reply[4] == request[4]) return reply;
+                }
+                throw new IOException("ATK matching input report was not received.");
             }
         }
 

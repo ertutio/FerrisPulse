@@ -123,7 +123,17 @@ namespace RazerBatteryTray
 
         private static byte[] Request(IntPtr handle, byte command, int offset, int length)
         {
+            return Request(handle, command, offset, length, null);
+        }
+
+        private static byte[] Request(IntPtr handle, byte command, int offset, int length, byte[] payload)
+        {
             byte[] packet = BuildRequest(command, offset, length);
+            if (packet != null && payload != null)
+            {
+                if (payload.Length != length) return null;
+                Buffer.BlockCopy(payload, 0, packet, 9, length);
+            }
             if (packet == null) return null;
             if (!Transfer(handle, packet, true, 100)) return null;
             for (int attempt = 0; attempt < 4; attempt++)
@@ -256,6 +266,146 @@ namespace RazerBatteryTray
                 finally { RazerDeviceHelper.SetupDiDestroyDeviceInfoList(devices); }
                 return null;
             }
+        }
+
+        private static string[] FindReceiverPaths()
+        {
+                System.Collections.Generic.List<string> paths = new System.Collections.Generic.List<string>();
+                Guid hidGuid;
+                RazerDeviceHelper.HidD_GetHidGuid(out hidGuid);
+                IntPtr devices = RazerDeviceHelper.SetupDiGetClassDevs(ref hidGuid, null, IntPtr.Zero, 0x12);
+                if (devices == IntPtr.Zero || devices.ToInt64() == -1) throw new InvalidOperationException("Cannot enumerate receivers.");
+                try
+                {
+                    RazerDeviceHelper.SP_DEVICE_INTERFACE_DATA iface = new RazerDeviceHelper.SP_DEVICE_INTERFACE_DATA();
+                    iface.cbSize = Marshal.SizeOf(iface);
+                    uint index = 0;
+                    while (RazerDeviceHelper.SetupDiEnumDeviceInterfaces(devices, IntPtr.Zero, ref hidGuid, index++, ref iface))
+                    {
+                        uint size;
+                        RazerDeviceHelper.SetupDiGetDeviceInterfaceDetail(devices, ref iface, IntPtr.Zero, 0, out size, IntPtr.Zero);
+                        if (size == 0) continue;
+                        IntPtr detail = Marshal.AllocHGlobal((int)size);
+                        try
+                        {
+                            Marshal.WriteInt32(detail, IntPtr.Size == 8 ? 8 : 5);
+                            if (!RazerDeviceHelper.SetupDiGetDeviceInterfaceDetail(devices, ref iface, detail, size, out size, IntPtr.Zero)) continue;
+                            string path = Marshal.PtrToStringAuto(new IntPtr(detail.ToInt64() + 4));
+                            if (path == null || path.IndexOf("vid_36b0&pid_3002", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                            IntPtr probe = RazerDeviceHelper.CreateFile(path, 0,
+                                RazerDeviceHelper.FILE_SHARE_READ | RazerDeviceHelper.FILE_SHARE_WRITE,
+                                IntPtr.Zero, RazerDeviceHelper.OPEN_EXISTING, 0, IntPtr.Zero);
+                            if (probe == IntPtr.Zero || probe.ToInt64() == -1) throw new InvalidOperationException("Cannot inspect receiver capabilities; WAVE75 selection is ambiguous.");
+                            bool supported = false;
+                            try
+                            {
+                                RazerDeviceHelper.HIDD_ATTRIBUTES attr = new RazerDeviceHelper.HIDD_ATTRIBUTES();
+                                attr.Size = Marshal.SizeOf(attr);
+                                IntPtr preparsed;
+                                if (!RazerDeviceHelper.HidD_GetAttributes(probe, ref attr)) throw new InvalidOperationException("Cannot inspect receiver identity.");
+                                if (attr.VendorID == ReceiverVid && attr.ProductID == ReceiverPid)
+                                {
+                                    if (!RazerDeviceHelper.HidD_GetPreparsedData(probe, out preparsed)) throw new InvalidOperationException("Cannot inspect receiver capabilities.");
+                                    try
+                                    {
+                                        RazerDeviceHelper.HIDP_CAPS caps;
+                                        if (RazerDeviceHelper.HidP_GetCaps(preparsed, out caps) < 0) throw new InvalidOperationException("Cannot inspect receiver HID capabilities.");
+                                        supported = caps.UsagePage == 0xFF60 && caps.Usage == 0x61 &&
+                                            caps.InputReportByteLength == ReportLength && caps.OutputReportByteLength == ReportLength;
+                                    }
+                                    finally { RazerDeviceHelper.HidD_FreePreparsedData(preparsed); }
+                                }
+                            }
+                            finally { RazerDeviceHelper.CloseHandle(probe); }
+                            if (!supported) continue;
+                            paths.Add(path);
+                        }
+                        finally { Marshal.FreeHGlobal(detail); iface.cbSize = Marshal.SizeOf(iface); }
+                    }
+                }
+                finally { RazerDeviceHelper.SetupDiDestroyDeviceInfoList(devices); }
+                return paths.ToArray();
+        }
+
+        private static Wave75Result<T> InSettingsSession<T>(Func<Wave75SettingsProtocol, T> action, string expectedPath)
+        {
+            lock (Sync)
+            {
+                string path;
+                try
+                {
+                    path = Wave75ReceiverSelection.Select(FindReceiverPaths(), delegate(string candidate)
+                    {
+                        IntPtr probe = RazerDeviceHelper.CreateFile(candidate, 0xC0000000,
+                            RazerDeviceHelper.FILE_SHARE_READ | RazerDeviceHelper.FILE_SHARE_WRITE,
+                            IntPtr.Zero, RazerDeviceHelper.OPEN_EXISTING, 0x40000000, IntPtr.Zero);
+                        if (probe == IntPtr.Zero || probe.ToInt64() == -1)
+                            throw new InvalidOperationException("Cannot inspect a receiver; WAVE75 selection is ambiguous.");
+                        return Wave75ReceiverSelection.Probe(
+                            delegate(byte command, int offset, int length, byte[] payload) { return Request(probe, command, offset, length, payload); },
+                            delegate { RazerDeviceHelper.CloseHandle(probe); });
+                    }, expectedPath);
+                }
+                catch (Exception ex) { return Wave75Result<T>.Failure(ex.Message, false); }
+                IntPtr handle = RazerDeviceHelper.CreateFile(path, 0xC0000000,
+                    RazerDeviceHelper.FILE_SHARE_READ | RazerDeviceHelper.FILE_SHARE_WRITE,
+                    IntPtr.Zero, RazerDeviceHelper.OPEN_EXISTING, 0x40000000, IntPtr.Zero);
+                if (handle == IntPtr.Zero || handle.ToInt64() == -1) return Wave75Result<T>.Failure("Cannot open receiver.", false);
+                Wave75SettingsProtocol protocol = new Wave75SettingsProtocol(delegate(byte command, int offset, int length, byte[] payload)
+                {
+                    return Request(handle, command, offset, length, payload);
+                });
+                Wave75Result<T> result;
+                bool attempted = false;
+                try
+                {
+                    attempted = true;
+                    protocol.StartAndVerifyIdentity();
+                    result = Wave75Result<T>.Succeeded(action(protocol), path);
+                }
+                catch (Exception ex) { result = Wave75Result<T>.Failure(ex.Message, protocol.PartialWrite); }
+                finally
+                {
+                    try { if (attempted && Request(handle, 0x11, 0, ChunkLength) == null) protocol.ExitFailed = true; }
+                    catch { protocol.ExitFailed = true; }
+                    finally { RazerDeviceHelper.CloseHandle(handle); }
+                }
+                if (protocol.ExitFailed) return Wave75Result<T>.Failure((result.Success ? "Operation completed, but " : result.Error + " ") + "receiver exit was not acknowledged; settings may have changed.", protocol.PartialWrite);
+                return result;
+            }
+        }
+
+        public static Wave75Result<Wave75Settings> ReadSettings()
+        {
+            return InSettingsSession(delegate(Wave75SettingsProtocol p) { return p.ReadSettings(); }, null);
+        }
+
+        public static Wave75Result<Wave75Settings> WriteLight(Wave75LightArea area, Wave75LightSettings value)
+        {
+            return InSettingsSession(delegate(Wave75SettingsProtocol p) { return p.WriteLight(area, value); }, null);
+        }
+        public static Wave75Result<Wave75KeyBinding> ReadKey(int layer, int matrixIndex)
+        { return InSettingsSession(delegate(Wave75SettingsProtocol p) { return p.ReadKey(layer, matrixIndex); }, null); }
+        public static Wave75Result<Wave75KeyBinding> WriteKey(int layer, int matrixIndex, Wave75KeyBinding value)
+        { return InSettingsSession(delegate(Wave75SettingsProtocol p) { return p.WriteKey(layer, matrixIndex, value); }, null); }
+        public static Wave75Result<Wave75Macro[]> ReadMacros()
+        { return InSettingsSession(delegate(Wave75SettingsProtocol p) { return p.ReadMacros(); }, null); }
+        public static Wave75Result<Wave75Macro[]> WriteMacros(Wave75Macro[] macros)
+        { return InSettingsSession(delegate(Wave75SettingsProtocol p) { return p.WriteMacros(macros); }, null); }
+        public static Wave75Result<Wave75Settings> WriteLight(Wave75LightArea area, Wave75LightSettings value, string expectedPath)
+        {
+            if (String.IsNullOrEmpty(expectedPath)) return Wave75Result<Wave75Settings>.Failure("Read the device before writing settings.", false);
+            return InSettingsSession(delegate(Wave75SettingsProtocol p) { return p.WriteLight(area, value); }, expectedPath);
+        }
+        public static Wave75Result<Wave75KeyBinding> WriteKey(int layer, int matrixIndex, Wave75KeyBinding value, string expectedPath)
+        {
+            if (String.IsNullOrEmpty(expectedPath)) return Wave75Result<Wave75KeyBinding>.Failure("Read the device before writing settings.", false);
+            return InSettingsSession(delegate(Wave75SettingsProtocol p) { return p.WriteKey(layer, matrixIndex, value); }, expectedPath);
+        }
+        public static Wave75Result<Wave75Macro[]> WriteMacros(Wave75Macro[] macros, string expectedPath)
+        {
+            if (String.IsNullOrEmpty(expectedPath)) return Wave75Result<Wave75Macro[]>.Failure("Read the device before writing settings.", false);
+            return InSettingsSession(delegate(Wave75SettingsProtocol p) { return p.WriteMacros(macros); }, expectedPath);
         }
     }
 }

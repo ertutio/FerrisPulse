@@ -599,6 +599,14 @@ namespace RazerBatteryTray
             btnKeyboardSettings.Cursor = Cursors.Hand;
             btnKeyboardSettings.Visible = false;
             btnKeyboardSettings.Click += (s, e) => {
+                if (IsWave75SettingsTarget(selectedDevice))
+                {
+                    using (var dlg = new Wave75SettingsDialog(dpiScale))
+                    {
+                        dlg.ShowDialog(this);
+                    }
+                    return;
+                }
                 ThreadPool.QueueUserWorkItem(_ => {
                     try
                     {
@@ -704,6 +712,26 @@ namespace RazerBatteryTray
                 }
             };
             cardPerformance.Controls.Add(btnMouseRateTest);
+
+            btnAtkA9Settings = new ModernButton();
+            btnAtkA9Settings.Text = "🎯 ATK A9 Ultimate 高级设置";
+            btnAtkA9Settings.Font = new Font("Microsoft YaHei UI", 8.5F, FontStyle.Bold);
+            btnAtkA9Settings.NormalColor = Color.FromArgb(36, 44, 62);
+            btnAtkA9Settings.HoverColor = Color.FromArgb(50, 62, 88);
+            btnAtkA9Settings.PressedColor = Color.FromArgb(26, 32, 46);
+            btnAtkA9Settings.BorderColor = Color.FromArgb(70, 90, 130);
+            btnAtkA9Settings.TextColor = Color.FromArgb(230, 240, 255);
+            btnAtkA9Settings.CornerRadius = (int)(6 * dpiScale);
+            btnAtkA9Settings.Cursor = Cursors.Hand;
+            btnAtkA9Settings.Visible = false;
+            btnAtkA9Settings.Click += (s, e) => {
+                if (!IsAtkA9SettingsTarget(selectedDevice)) return;
+                using (var dlg = new AtkA9SettingsDialog(dpiScale))
+                {
+                    dlg.ShowDialog(this);
+                }
+            };
+            cardPerformance.Controls.Add(btnAtkA9Settings);
 
             // NuPhy Hardware Console Controls
 

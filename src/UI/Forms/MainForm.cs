@@ -596,6 +596,7 @@ namespace RazerBatteryTray
         // Generic Mouse Controls
 
         private ModernButton btnMouseRateTest;
+        private ModernButton btnAtkA9Settings;
 
 
 

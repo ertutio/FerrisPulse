@@ -38,8 +38,10 @@ D:\FerrisPulse · 灵脉\
     │   ├── VgnDeviceHelper.cs   [VGN / 蜻蜓 / ATK 协议解析]
     │   ├── LogitechDeviceHelper.cs [罗技 HID++ 协议解析]
     │   ├── NuphyDeviceHelper.cs [NuPhy 键盘电量协议与侧灯控制]
-    │   ├── Wave75DeviceHelper.cs [WAVE75 PMO HUB 接收器身份确认与键盘电量读取]
+    │   ├── Wave75DeviceHelper.cs [WAVE75 接收器身份确认、电量与设置会话]
+    │   ├── Wave75Settings.cs [WAVE75 灯效、键位与宏的纯协议编解码]
     │   ├── UniversalGamingDeviceHelper.cs [多品牌外设电量；ATK A9 Ultimate 独立 HID Output/Input 查询]
+    │   ├── AtkA9SettingsHelper.cs [A9 Ultimate 专用 EEPROM 读写、回读核对与宏]
     │   ├── ValkyrieDeviceHelper.cs [瓦尔基里全系键盘/鼠标私有 HID 协议、2.4G 接收器多模解析、8K 回报率与 DPI 调节]
     │   ├── BluetoothDeviceHelper.cs [Windows 原生 BLE 电池服务]
     │   ├── GenericHidHelper.cs  [通用 HID 电池报告解析]
@@ -111,6 +113,8 @@ D:\FerrisPulse · 灵脉\
 | **瓦尔基里全系键盘/鼠标支持** | `src/Hardware/ValkyrieDeviceHelper.cs` | 瓦尔基里全系 2.4G 接收器/HID 协议解析、双模电量、8K 回报率与独立 X/Y 轴 DPI 调节 |
 | **WAVE75 键盘电量** | `src/Hardware/Wave75DeviceHelper.cs` / `src/Hardware/DeviceManager.cs` | 仅匹配 `36B0:3002` 的 `FF60:0061` 接收器集合，确认下游 `36B0:3008/3009` 且键盘类型为 103 后查询电量；有界 HID 收发与退出确认 |
 | **ATK A9 Ultimate 鼠标电量** | `src/Hardware/UniversalGamingDeviceHelper.cs` | 针对 `373B:1118/11B6` 的 `FF04:0002` 或 `FF02:0002` 集合，使用 0x08 Output/Input 电量报文；不将共享 `373B:101B` 接收器直接标记为 A9 |
+| **WAVE75 灯效、键位和宏** | `src/Hardware/Wave75DeviceHelper.cs` / `src/Hardware/Wave75Settings.cs` / `src/UI/Forms/Wave75SettingsDialog.cs` / `src/UI/Forms/Wave75KeyMacroDialog.cs` | 仅在接收器确认下游 WAVE75 后开启设置会话；灯效和键位保留非目标字节，宏按官方序列化器重建整表；分片写入后回读核对；物理矩阵索引需实机确认 |
+| **ATK A9 Ultimate DPI、侧键和宏** | `src/Hardware/AtkA9SettingsHelper.cs` / `src/Models/AtkA9Settings.cs` / `src/UI/Forms/AtkA9SettingsDialog.cs` | 仅对官方 3.2.31 表中的 `373B:11B6`、`FF04:0002` 且 CID/MID 为 1/3 的设备开放设置；读原 EEPROM 后保留非目标数据，写入后回读；不复用雷蛇 DPI 路由 |
 | **DPI 档位管理与 XY 轴比例调节** | `src/UI/Forms/DpiManagementDialog.cs` / `src/UI/Controls/DpiStageRowControl.cs` | DPI 档位增删、XY 轴独立调节 (4:3/16:10 比例联动) 与板载固化 |
 | **屏幕悬浮 OSD 指示器** | `src/UI/Forms/DpiOsdForm.cs` | 游戏前台免切焦点悬浮 HUD、DPI/XY独立双轴显示与回报率变动提示 |
 | **多设备优先级拖拽与首选设备** | `src/Hardware/DeviceManager.cs` / `DevicePriorityForm.cs` | 外设优先级权重与展示顺序 |
